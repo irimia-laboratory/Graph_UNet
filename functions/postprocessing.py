@@ -577,10 +577,11 @@ class postprocess():
         return model, pvals_corrected
         
 # Function for getting dataset statistics based on what files were converted
+# Function for getting dataset statistics based on what files were converted
 def get_dataset_statistics(datasets, age_filter=None):
     
     # Initialize the summary DataFrame with correct columns
-    d_table = pd.DataFrame(columns=['repository', 'set', 'N', 'min', 'max', 'μ', 'σ', 'M:F'])
+    d_table = pd.DataFrame(columns=['repository', 'set', 'N_subj', 'N_scans', 'min', 'max', 'μ', 'σ', 'M:F'])
 
     # Store the training demographic data for depicting the combined set
     training_data = []
@@ -595,8 +596,7 @@ def get_dataset_statistics(datasets, age_filter=None):
     ]
 
     # Begin counting number of males and females
-    # we need this because some have overlapping mappings (i.e. 0 is female sometimes male others)
-    training_sex_counts = {'Female' : 0, 'Male' : 0}
+    training_sex_counts = {'Female': 0, 'Male': 0}
     
     for dset in datasets:
         # Get the metadata
@@ -623,7 +623,7 @@ def get_dataset_statistics(datasets, age_filter=None):
             elif 'full_date' in dset['data_preproc']:
                 df[dset['date_col']] = pd.to_datetime(df[dset['date_col']], dayfirst=True).dt.strftime('%Y%m%d').astype(int)
 
-            elif 'all_str': # UKBB is weird and needs everything except age as a str beforehand
+            elif 'all_str': # UKBB needs strings beforehand
                 df[dset['date_col']] = df[dset['date_col']].astype(str)
                 df[dset['sex_col']] = df[dset['sex_col']].astype(str)
                 df[dset['id_col']] = df[dset['id_col']].astype(str)
@@ -633,26 +633,21 @@ def get_dataset_statistics(datasets, age_filter=None):
         parts = raw_files[0][len(dset["raw_data"]):].split('_')
         split_position = None
 
-        max_attempts = 5 # the max number of _ to search for (i.e. subj_date = 1, subj1_subj2_date = 2, etc.)
+        max_attempts = 5
         for attempt in range(1, max_attempts + 1):
-            # Try joining increasing numbers of parts for ID
             for i in range(attempt, len(parts)):
-
-                # ID is composed of parts up to split position minus 1
                 potential_id = '_'.join(parts[:i])
-                # Date is the next part after ID
                 potential_date = parts[i]
                 
-                # Check if both ID and date match
                 id_match = potential_id in df[dset['id_col']].values.astype(str)
                 if dset['date_col'] is not None:
                     date_match = potential_date in df[dset['date_col']].values.astype(str)
 
-                # Check if no valid date, in which case don't consider it
-                if potential_date == '00000000': date_match = True
+                if potential_date == '00000000':
+                    date_match = True
                 
                 if id_match and date_match:
-                    split_position = i+1 # id_date
+                    split_position = i + 1
                         
         if not split_position:
             raise Exception('Error: Aberrant relationship between raw file names and metadata IDs/dates')
@@ -677,96 +672,98 @@ def get_dataset_statistics(datasets, age_filter=None):
         to_remove = []
         for key in subject_date_files.keys():
             for suffix in file_suffixes:
-                try: assert suffix in subject_date_files[key]
+                try: 
+                    assert suffix in subject_date_files[key]
                 except AssertionError:
                     to_remove.append(key)
                     break
-        for r in to_remove: subject_date_files.pop(r) 
+        for r in to_remove: 
+            subject_date_files.pop(r) 
         subj_timepoints = [k for k in subject_date_files.keys()]
         
         # Keep only selected subject groups
-        if dset['select'] == 'all':
-            pass
-        else:
+        if dset['select'] != 'all':
             column, valid_val = dset['select'].split("==", 1)
-            valid_val = str(valid_val).strip() # make datatypes equivalent   
-            df = df[df[column].astype(str).str.strip() == valid_val] # 
+            valid_val = str(valid_val).strip()
+            df = df[df[column].astype(str).str.strip() == valid_val]   
 
         # Apply age limiting if specified
-        if age_filter: # min age
-            if age_filter < 0: # if doing [less]
+        if age_filter:
+            if age_filter < 0:
                 df = df[df[dset['age_col']] < abs(age_filter)]
-            else: # if doing [greater or equal too]
+            else:
                 df = df[df[dset['age_col']] >= age_filter]
-            # If no remaining valid subjects, skip this dataset
-            if df.empty: continue
+            if df.empty: 
+                continue
 
-        # Filter the DataFrame to include only valid subjects
+        # Filter DataFrame to include only valid subjects
         if dset['date_col'] is not None: 
             mask = df.apply(lambda row: f"{row[dset['id_col']]}_{row[dset['date_col']]}" in subj_timepoints, axis=1)
         else:
             mask = df.apply(lambda row: f"{row[dset['id_col']]}_00000000" in subj_timepoints, axis=1)
         filtered_df = df[mask]
 
-        # Remove duplicates (i.e. if df has multiple rows for the same participant/timepoint)
+        # Remove duplicates
         if dset['date_col'] is not None: 
             filtered_df = filtered_df.drop_duplicates(subset=[dset['id_col'], dset['date_col']])
         else:
             filtered_df = filtered_df.drop_duplicates(subset=[dset['id_col']])
 
-        # Compute sex statistics for ratio
+        # Compute sex statistics
         sex_counts = filtered_df[dset['sex_col']].value_counts()
         n_males = sex_counts.get(dset['sex_mapping']['Male'], 0)
         n_females = sex_counts.get(dset['sex_mapping']['Female'], 0)
+
+        # Count scans vs subjects
+        n_scans = len(filtered_df)
+        n_subj = filtered_df[dset['id_col']].nunique()
  
-        # Save this to the training set if applicable
-        if dset['set'] == 'training' or dset['set'] == 'pretraining':
+        # Save training info if needed
+        if dset['set'] in ['training', 'pretraining']:
             for _, row in filtered_df.iterrows():
                 training_data.append({
+                    'id': row[dset['id_col']],
                     'age': row[dset['age_col']]
                 })
             training_sex_counts['Female'] += n_females
             training_sex_counts['Male'] += n_males
         
-        # Add a new row to d_table for this dataset
+        # Add row
         new_row = {
             'repository' : dset['name'],
             'set' : dset['set'],
-            'N' : len(filtered_df),
+            'N_subj' : n_subj,
+            'N_scans' : n_scans,
             'min' : f'{filtered_df[dset["age_col"]].min():.1f}',
             'max' : f'{filtered_df[dset["age_col"]].max():.1f}',
             'μ' : f'{filtered_df[dset["age_col"]].mean():.1f}',
             'σ' : f'{filtered_df[dset["age_col"]].std():.1f}',
-            'M:F' : f'1 / {n_females/n_males:.1f}'
+            'M:F' : f'1 / {n_females/n_males:.1f}' if n_males > 0 else 'NA'
         }
         d_table = pd.concat([d_table, pd.DataFrame([new_row])], ignore_index=True)
 
-    # Add combined training stats row if we have training sets
+    # Add combined training stats row
     if training_data:
-
-        # Store all possible sex mappings from training datasets
-        sex_mappings = {'Female': set(), 'Male': set()}
-        for dset in datasets:
-            if dset['set'] == 'training' or dset['set'] == 'pretraining':
-                sex_mappings['Female'].add(dset['sex_mapping']['Female'])
-                sex_mappings['Male'].add(dset['sex_mapping']['Male'])
-
-        # Get the training data as a combined df
         train_df = pd.DataFrame(training_data)
 
-        # Add a new row to d_table for the training datasets
-        if dset['set'] == 'pretraining': set_name = 'All Pretraining'
-        else: set_name = 'All Training'
+        if dset['set'] == 'pretraining': 
+            set_name = 'All Pretraining'
+        else: 
+            set_name = 'All Training'
+
+        n_scans = len(train_df)
+        n_subj = train_df['id'].nunique()
 
         combined_row = {
             'repository' : set_name,
             'set' : 'combined',
-            'N' : len(train_df),
+            'N_subj' : n_subj,
+            'N_scans' : n_scans,
             'min' : f'{train_df["age"].min():.1f}',
             'max' : f'{train_df["age"].max():.1f}',
             'μ' : f'{train_df["age"].mean():.1f}',
             'σ' : f'{train_df["age"].std():.1f}',
-            'M:F' : f'1 / {training_sex_counts["Female"]/training_sex_counts["Male"]:.1f}'
+            'M:F' : f'1 / {training_sex_counts["Female"]/training_sex_counts["Male"]:.1f}' if training_sex_counts["Male"] > 0 else 'NA'
         }
         d_table = pd.concat([d_table, pd.DataFrame([combined_row])], ignore_index=True)
     
