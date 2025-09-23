@@ -1,2 +1,2 @@
-Code used in "Local Brain Age with Graph U-Net Maps Primary and Secondary Cognitive Effects of Alzheimer's Disease"
+Code used in "Cortical Brain Age Estimation Using a Graph Neural Network Reveals the Anatomic Features of Cognitive Aging and Impairment in Alzheimer's Disease"
 
