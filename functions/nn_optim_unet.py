@@ -1,33 +1,7 @@
-# Standard library imports
-import os
 import sys
-import glob
-import gc
-
-# Custom paths
-sys.path.append('/home/samuelA/.local/lib/python3.10/site-packages')
-sys.path.append('/mnt/md0/tempFolder/samAnderson/gnn_model')
-
-# Third-party imports
-import numpy as np
-import nibabel as nib
-import time
-import random
-from copy import deepcopy
-
-# Statistical third-party imports
-from sklearn.model_selection import KFold
-
-# PyTorch imports
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch_scatter import scatter_mean
-
-# PYG imports
-from torch_geometric.data import Data as Data_pyg
-from torch_geometric.loader import DataLoader as DataLoader_pyg
-from torch_geometric.nn import GCNConv, BatchNorm
+sys.path.append('/mnt/md0/tempFolder/samAnderson/gnn_model/unet-gnn/') 
+sys.path.append('/mnt/md0/tempFolder/samAnderson/gnn_model/unet-gnn/functions/') 
+from paths_and_imports import *
 
 ###
 SEED = 808
@@ -54,7 +28,7 @@ def run_model(X_train, y_train, X_test, y_test, model=None, mask=None,
               pooling_path='/mnt/md0/tempFolder/samAnderson/gnn_model/unet-gnn/pooling/',
               ico_levels=[6, 5, 4], criterion='mae', weight_decay=0.01, 
               first='rh', intra_w=0, global_w=0, feature_scale=1, dropout_levels=[0.5, 0.5],
-              verbose=True):
+              ablation=False, integrated_grad=False, verbose=True):
     """
     High-level wrapper for training/testing a GNN model.
     """
@@ -106,7 +80,7 @@ def run_model(X_train, y_train, X_test, y_test, model=None, mask=None,
             n_epochs=n_epochs, lr=lr, print_every=print_every,
             ico_levels=ico_levels, criterion=criterion,
             weight_decay=weight_decay, first=first,
-            intra_w=intra_w, global_w=global_w
+            intra_w=intra_w, global_w=global_w,
         )
 
     # Train + test or test only or CV
@@ -118,7 +92,8 @@ def run_model(X_train, y_train, X_test, y_test, model=None, mask=None,
         n_epochs=n_epochs, lr=lr, print_every=print_every,
         ico_levels=ico_levels, criterion=criterion,
         weight_decay=weight_decay, first=first,
-        intra_w=intra_w, global_w=global_w
+        intra_w=intra_w, global_w=global_w, 
+        ablation=ablation, integrated_grad=integrated_grad
     )
 
     return results  # tuple: (avg_mae, per_node_e, chr_ages, age_gaps, pred_per_vertex)
@@ -705,6 +680,62 @@ class nn_builder(nn.Module):
 
         return avg_loss, avg_error, all_chr_ages, all_age_gaps, all_pred_per_vertex
 
+    def integrated_gradients(self, X_test, y_test, batch_load=1, n_steps=50):
+
+        # Grab the model
+        model = self.model.to(device)
+        model.eval()
+
+        # Build PYG dataset
+        data_list = [Data_pyg(x=X_test[i], y=y_test[i]) for i in range(X_test.shape[0])]
+        loader_gnn = DataLoader_pyg(data_list, batch_size=batch_load, shuffle=False)
+
+        # Define function to account for captum wanting a tensor, but my model wanting a Data object
+        def model_forward(x, batch):
+            batch = batch.clone()    # avoid modifying original batch
+            batch.x = x
+            return model(batch)      # your model.forward(batch)
+
+        # Save subject-level attributions
+        all_attributions = []
+        
+        # Iterate over batches
+        total_batches = len(loader_gnn)
+        for batch_idx, batch in enumerate(loader_gnn):
+            
+            # Send batch and baseline to CUDA
+            batch = batch.to(device)
+            baseline = torch.zeros_like(batch.x).to(device)
+            
+            # Expand the age to fill the input/output shape
+            batch.y = torch.repeat_interleave(batch.y, repeats=self.n_vertices) # number per batch, repeated per n_vertices
+            
+            # Initialize IG
+            ig = IntegratedGradients(model_forward)
+
+            # Run IG
+            attributions = ig.attribute(
+                inputs=batch.x,
+                baselines=baseline,
+                additional_forward_args=(batch,),
+                n_steps=n_steps,
+                internal_batch_size=1
+            )
+            
+            all_attributions.append(attributions.squeeze(0).detach().cpu())  # (n_nodes, n_features)
+            print(f"Batch {batch_idx+1}/{total_batches} complete")
+
+        # Concatenate across batches
+        all_attributions = torch.cat(all_attributions, dim=0)  # (n_subjects*n_vertices, n_features)
+        
+        # Reshape
+        n_subjects = X_test.shape[0]
+        n_vertices = all_attributions.shape[0] // n_subjects
+        n_features = all_attributions.shape[1]
+        all_attributions = all_attributions.view(n_subjects, n_vertices, n_features)
+        
+        return all_attributions
+
     def vae_preproc(self, fsavg_path, batch_load, first='rh'):
 
         # Get the labels for both hemis for both paths
@@ -812,7 +843,8 @@ class nn_builder(nn.Module):
                  n_epochs=50, lr=0.0001, print_every=10, 
                  ico_levels=[6, 5, 4], criterion=F.l1_loss, 
                  weight_decay=0.01, first='rh',
-                 intra_w=0.1, global_w=0.05):
+                 intra_w=0.1, global_w=0.05,
+                 ablation=False, integrated_grad=False):
         '''
         Manipulate the NN
         '''
@@ -836,7 +868,63 @@ class nn_builder(nn.Module):
 
         # Set seed for reproducability
         set_seed(SEED)
+        
+        # If running ablation for the test set
+        if ablation:
+            
+            # Create objects to hold data of interest
+            mae_results = {}
+            per_subj_results = {}
+            features_names = ['area', 'curv', 'sulc', 'thickness', 'WM-GM_ratio'] # from functions/preprocessing . sort makes this easier
+            epsilon = 1e-8
+            
+            # Load the testing data and get the number of features 
+            X_loaded, y_loaded = self.load_data(X_test, y_test, mask) # this logic is different than the other loops, where the string is overwritten
+            n_features = X_loaded.shape[2]
+            
+            # Get the percent error of the training sample per-vertex to function as a baseline
+            avg_mae, per_node_e, y_test_vals, age_gaps, pred_per_vertex = self.test_nn(X_loaded, y_loaded, batch_load=batch_load)
+            mae_baseline = torch.mean(torch.abs(pred_per_vertex - y_test_vals[:, None]), dim=0).cpu().numpy() # avg error per vertex 
+            
+            mae_results['baseline'] = mae_baseline
+            per_subj_results['baseline'] = [avg_mae.cpu().numpy(), 
+                                            per_node_e.cpu().numpy(), 
+                                            y_test_vals.cpu().numpy(), 
+                                            age_gaps.cpu().numpy(),
+                                            pred_per_vertex.cpu().numpy()]  
+                                              
+            # Iterate over each feature in X and override it with a normal distribution of values
+            for f_idx in range(n_features):
+                
+                # (re)Load in the data (to save memory) and ablate the target feature
+                X_loaded, y_loaded = self.load_data(X_test, y_test, mask)
+                X_loaded[:, :, f_idx] = 0.0 # zero
+                #X_loaded[:, :, f_idx] = torch.randn(X_loaded.shape[0], X_loaded.shape[1]) # random noise
+                
+                # Test the model and get the percent errors per-vertex
+                avg_mae, per_node_e, y_test_vals, age_gaps, pred_per_vertex = self.test_nn(X_loaded, y_loaded, batch_load=batch_load)
+                
+                # Percent change in MAE relative to baseline
+                ablate_mae = torch.mean(torch.abs(pred_per_vertex - y_test_vals[:, None]), dim=0).cpu().numpy()
+                mae_results[features_names[f_idx]] = 100 * (ablate_mae - mae_baseline) / (mae_baseline + epsilon)
 
+                # Raw subject predictions
+                per_subj_results[features_names[f_idx]] = [avg_mae.cpu().numpy(), 
+                                                           per_node_e.cpu().numpy(), 
+                                                           y_test_vals.cpu().numpy(), 
+                                                           age_gaps.cpu().numpy(),
+                                                           pred_per_vertex.cpu().numpy()]
+            
+            results = (mae_results, per_subj_results)
+            torch.cuda.empty_cache()
+            return results
+        
+        # If getting integrated gradients
+        if integrated_grad:
+            X_test, y_test = self.load_data(X_test, y_test, mask)
+            all_attributions = self.integrated_gradients(X_test, y_test, batch_load=batch_load)
+            return all_attributions.detach().cpu().numpy()
+            
         # If using a trained model
         if model is not None: self.model = model
 

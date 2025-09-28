@@ -1,4 +1,43 @@
 from paths_and_imports import *
+from nn_optim_unet import *
+from postprocessing import *
+
+def integrated_grad(X_test, y_test, model, suffix, mask=None, test_size=8):
+
+    gradient_array = run_model(None, None, X_test, y_test, model=model,
+                        mask=mask, batch_size=test_size, batch_load=test_size, n_epochs=1, lr=lr, 
+                        criterion='variance_and_mae', print_every=print_every, ico_levels=[6, 5, 4], 
+                        first=first, intra_w=intra_w,  global_w=global_w, weight_decay=weight_decay, 
+                        feature_scale=1, dropout_levels=dropout_levels, ablation=False, integrated_grad=True, verbose=False)
+
+    # Save the outputted values
+    np.save(f'{output_dir}{suffix}_gradient_array', gradient_array)
+    
+    print('\n')
+    return gradient_array
+
+
+def ablate_model(X_test, y_test, model, suffix, mask=None, test_size=8):
+
+    ablation_dict, per_subject_dict = run_model(None, None, X_test, y_test, model=model,
+                        mask=mask, batch_size=test_size, batch_load=test_size, n_epochs=1, lr=lr, 
+                        criterion='variance_and_mae', print_every=print_every, ico_levels=[6, 5, 4], 
+                        first=first, intra_w=intra_w,  global_w=global_w, weight_decay=weight_decay, 
+                        feature_scale=1, dropout_levels=dropout_levels, ablation=True, verbose=False)
+
+    # Save the outputted values
+    with open(f"{output_dir}{suffix}_ablation_dict.pkl", "wb") as f: pickle.dump(ablation_dict, f)
+    with open(f"{output_dir}{suffix}_ablation_per_subject_dict.pkl", "wb") as f: pickle.dump(per_subject_dict, f)
+    for key in per_subject_dict:
+        avg_mae, per_node_e, chr_ages, age_gaps, pred_per_vertex = per_subject_dict[key]
+        np.save(f'{output_dir}{suffix}_{key}_avg_mae.npy', avg_mae)
+        np.save(f'{output_dir}{suffix}_{key}_per_node_e', per_node_e)
+        np.save(f'{output_dir}{suffix}_{key}_chr_ages', chr_ages)
+        np.save(f'{output_dir}{suffix}_{key}_age_gaps', age_gaps)
+        np.save(f'{output_dir}{suffix}_{key}_pred_per_vertex', pred_per_vertex)
+    
+    print('\n')
+    return ablation_dict, per_subject_dict
 
 def test_model(X_test, y_test, model, suffix, mask=None, test_size=8):
 
@@ -6,7 +45,7 @@ def test_model(X_test, y_test, model, suffix, mask=None, test_size=8):
                         mask=mask, batch_size=test_size, batch_load=test_size, n_epochs=1, lr=lr, 
                         criterion='variance_and_mae', print_every=print_every, ico_levels=[6, 5, 4], 
                         first=first, intra_w=intra_w,  global_w=global_w, weight_decay=weight_decay, 
-                        feature_scale=1, dropout_levels=dropout_levels, verbose=False)
+                        feature_scale=1, dropout_levels=dropout_levels, ablation=False, verbose=False)
 
     # Save the outputted values
     np.save(f'{output_dir}{suffix}_avg_mae.npy', avg_mae)

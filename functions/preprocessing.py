@@ -135,7 +135,7 @@ def make_data(root_path='/mnt/md0/tempFolder/samAnderson/', file_types=['w-g.pct
 
     # create a dictionary with the subject paths
     all_paths = {}
-
+    
     for f in file_types:
 
         rh_temp = glob.glob(root_path + data_path + f'surf/rh.{f}') # right hemisphere
@@ -147,7 +147,7 @@ def make_data(root_path='/mnt/md0/tempFolder/samAnderson/', file_types=['w-g.pct
             lh_temp = [x for x in lh_temp if subj not in x]
 
         all_paths[f'{f}_rh'] = sorted(rh_temp) # so that all of the paths align
-        all_paths[f'{f}_lh'] = sorted(lh_temp) # rh_curv, lh_curv, rh_w-g, lh_w-g, rh_thickness, lh_thickness
+        all_paths[f'{f}_lh'] = sorted(lh_temp)
 
     # set the output directory, then either make or load in atlas-projected subjects
     if output_dir == None:

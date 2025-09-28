@@ -1,38 +1,4 @@
-# === Imports === #
-
-# Standard library
-import os
-import sys
-import glob
-import subprocess
-from collections import defaultdict
-
-# Third-party
-import numpy as np
-import pandas as pd
-import nibabel as nib
-import scipy.io
-import scipy.sparse as sparse
-from scipy.stats import skew, ttest_ind
-import re
-
-# Stats and ML
-import statsmodels.api as sm
-import statsmodels.formula.api as smf
-from statsmodels.stats.multitest import multipletests
-from sklearn.linear_model import Ridge
-
-# Plotting
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-# Custom paths
-sys.path.append('/home/samuelA/.local/lib/python3.10/site-packages')
-sys.path.append('/mnt/md0/tempFolder/samAnderson/gnn_model')
-
-# PyTorch Geometric
-from torch_geometric.data import Data
-from torch_geometric.loader import DataLoader
+from paths_and_imports import *
 
 # Class for post-processing after model testing
 class postprocess():
@@ -92,7 +58,7 @@ class postprocess():
         _, faces = nib.freesurfer.read_geometry(f'{self.fsavg_path}surf/rh.pial')
         faces = np.vstack((faces, faces + (np.max(faces) + 1)))
         full_n_verts = faces.max() + 1
-
+        
         if mask is None:
             raise ValueError("Must provide `mask` to remove medial wall influence.")
 
@@ -106,7 +72,7 @@ class postprocess():
         index_map[cortex_indices] = np.arange(cortex_indices.size)
         faces = index_map[faces]  # remap face indices
         n_verts = cortex_indices.size
-
+        
         # Fast adjacency construction
         row = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
         col = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
@@ -126,13 +92,12 @@ class postprocess():
         # Normalize
         deg = np.array(neighborhood.sum(axis=1)).ravel()
         smoothing_op = sparse.diags(1.0 / deg) @ neighborhood
-
+                
         # Efficient smoothing loop (still iterative but vectorized)
         smoothed_pred = pred_per_vertex.copy()
         for _ in range(n_iter):
             smoothed_pred = smoothed_pred @ smoothing_op.T
-        
-
+            
         # Outputs
         vertex_means = np.mean(smoothed_pred, axis=1)
         age_gaps = vertex_means - chr_ages
@@ -340,8 +305,9 @@ class postprocess():
         # Get the global limits for the plot as abs
         global_limits = abs(global_limits)
         
-        # Get the anatomic labels
-        self.get_labels()
+        # Ensure labels and names are loaded
+        if not hasattr(self, 'labels'):
+            self.get_labels()
 
         # Remove the medial wall
         pred_per_vertex, mask = self.remove_medial_wall(pred_per_vertex)
@@ -481,7 +447,7 @@ class postprocess():
         # Handle case: multiple regions + multiple hemis
         elif isinstance(target_region, list):
             if not isinstance(hemi, list) or len(target_region) != len(hemi):
-                raise ValueError("If target_region is a list, hemi must be a list of the same length.")
+                hemi = ['both'] * len(target_region)
 
             for region_name, region_hemi in zip(target_region, hemi):
                 if region_hemi == 'both':
@@ -519,64 +485,32 @@ class postprocess():
         else:
             raise ValueError(f"Unknown mean method: {mean}")
         
-    # Regress anatomical qualities (from testing data) against age gap
-    def regress_region(self, X_test, error_per_vertex, groups_dict=None, target_region='G_oc-temp_med-Parahip', 
-                    feature_order=['area','curvature','sulcal_depth', 'thickness', 'white_gray_matter_intensity_ratio']): # used for all files; avoid -
-        
+    # Get the average for each hemisphere
+    def lobe_avgs(self, pred_per_vertex):
+    
         # Ensure labels and names are loaded
-        if not hasattr(self, 'labels') or not hasattr(self, 'names'):
+        if not hasattr(self, 'labels'):
             self.get_labels()
-        
-        # Handle full-cortex case
-        if target_region == 'all':
-            mask = np.ones_like(self.labels, dtype=bool)
-        else:
-            # Generate region mask
-            if not hasattr(self, 'labels'):
-                self.get_labels()
-            mask = np.zeros_like(self.labels, dtype=bool)
-            for i, (name, _) in enumerate(self.names):
-                if target_region.lower() in name.lower():
-                    mask |= (self.labels == i)
-        
-        if not np.any(mask):
-            raise ValueError(f"No vertices found for region: {target_region}")
-        
-        # Compute subject-level averages within region
-        X_avg = np.mean(X_test[:, mask, :], axis=1)  # Mean features per subject
-        y_avg = self.average_error_within_region(error_per_vertex, target_region)  # Mean error per subject
-        
-        if groups_dict is None: # standard regression
-        
-            # Add intercept column
-            X_with_intercept = sm.add_constant(X_avg) # adds to front; only needed for sm.OLS not smf.ols
-            # Fit the model
-            model = sm.OLS(y_avg, X_with_intercept).fit()
-                    
-        else: # regression with interaction term
             
-            # Build DataFrame
-            df = pd.DataFrame(X_avg, columns=feature_order)
-            df['brain_age'] = y_avg
-            # Add group variables to df
-            for group, values in groups_dict.items():
-                df[group] = values
+        # Get the unique regions
+        unique_regions = sorted(set([r for (r, hemi) in self.names]))
+
+        # Create a dict with all lobes
+        lobes = {
+            'temporal' : [x for x in unique_regions if 'temp' in x.lower()],
+            'parietal' : [x for x in unique_regions if 'pariet' in x.lower()],
+            'frontal' : [x for x in unique_regions if 'front' in x.lower()],
+            'occipital' : [x for x in unique_regions if 'occip' in x.lower()]
+        }
+
+        # Create a dict to store lobe averages
+        lobe_avg = {}
+
+        # Get the average prediction per lobe
+        for lobe in lobes: lobe_avg[lobe] = np.mean(self.avg_region_error(pred_per_vertex, lobes[lobe]))
+  
+        return lobe_avg
         
-            # For each group, create (feature1 + feature2 + ...) * group term
-            morph_str = ' + '.join(feature_order)
-            interaction_terms = [f'({morph_str}) * {g}' for g in groups_dict.keys()]
-            formula = 'brain_age ~ ' + ' + '.join(interaction_terms)
-            
-            # Fit the model
-            model = smf.ols(formula, data=df).fit()
-            
-        # Adjust the p-values
-        pvals = model.pvalues
-        _, pvals_corrected, _, _ = multipletests(pvals, alpha=0.05, method='fdr_bh')
-            
-        return model, pvals_corrected
-        
-# Function for getting dataset statistics based on what files were converted
 # Function for getting dataset statistics based on what files were converted
 def get_dataset_statistics(datasets, age_filter=None):
     
@@ -824,7 +758,8 @@ def regress_cognitive(data_dir, output_dir, cog_path, test_relations,
                       subset=True, regions=None, partial_region_names=False,
                       postprocess_obj=None, covariate_test=None, 
                       get_beta_arrays=False,
-                      mask_by='adjusted', pval_thresh=0.05):
+                      mask_by='adjusted', pval_thresh=0.05,
+                      brain_age_gaps=False):
 
     # === Prep the cognitive scores ===
     cognitive_scores = pd.read_csv(cog_path)
@@ -878,10 +813,11 @@ def regress_cognitive(data_dir, output_dir, cog_path, test_relations,
         indices[test_key] = mask[mask].index.tolist()
 
     # === Load brain age gaps ===
-    brain_age_gaps = {
-        'CN': np.load(f'{output_dir}test_CN_processed_pred_per_vertex.npy') - CN_ages[:, np.newaxis],
-        'AD': np.load(f'{output_dir}test_AD_processed_pred_per_vertex.npy') - AD_ages[:, np.newaxis]
-    }
+    if not brain_age_gaps:
+        brain_age_gaps = {
+            'CN': np.load(f'{output_dir}test_CN_processed_pred_per_vertex.npy') - CN_ages[:, np.newaxis],
+            'AD': np.load(f'{output_dir}test_AD_processed_pred_per_vertex.npy') - AD_ages[:, np.newaxis]}
+    else: pass
 
     all_results = []
     all_test_scores = {}
