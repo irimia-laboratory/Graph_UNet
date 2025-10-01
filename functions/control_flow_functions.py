@@ -2,20 +2,103 @@ from paths_and_imports import *
 from nn_optim_unet import *
 from postprocessing import *
 
-def integrated_grad(X_test, y_test, model, suffix, mask=None, test_size=8):
+def integrated_grad(X_test, y_test, model, suffix, 
+                    mask=None, test_size=8, order=False,
+                    both_angles=[False], load=False,
+                    grad_dict=False, n_columns=3,
+                    abs_lims=[25, 25, 10, 10, 10],
+                    baseline=None):
 
-    gradient_array = run_model(None, None, X_test, y_test, model=model,
-                        mask=mask, batch_size=test_size, batch_load=test_size, n_epochs=1, lr=lr, 
-                        criterion='variance_and_mae', print_every=print_every, ico_levels=[6, 5, 4], 
-                        first=first, intra_w=intra_w,  global_w=global_w, weight_decay=weight_decay, 
-                        feature_scale=1, dropout_levels=dropout_levels, ablation=False, integrated_grad=True, verbose=False)
+    if not grad_dict:
+        if load: 
+            grad_array = np.load(f'{output_dir}{suffix}_integrated_grad.npy')
+        else:
+            grad_array = run_model(None, None, X_test, y_test, model=model,
+                                mask=mask, batch_size=test_size, batch_load=test_size, n_epochs=1, lr=lr, 
+                                criterion='variance_and_mae', print_every=print_every, ico_levels=[6, 5, 4], 
+                                first=first, intra_w=intra_w,  global_w=global_w, weight_decay=weight_decay, 
+                                feature_scale=1, dropout_levels=dropout_levels, ablation=False, integrated_grad=True, 
+                                verbose=False, integrated_baseline=baseline)
+            # Save the array
+            np.save(f'{output_dir}{suffix}_integrated_grad.npy', grad_array)
 
-    # Save the outputted values
-    np.save(f'{output_dir}{suffix}_gradient_array', gradient_array)
+        # create the postprocessing object
+        p = postprocess(suffix=suffix)
     
-    print('\n')
-    return gradient_array
+        # average across subjects
+        avg_grad = np.mean(grad_array, axis=0)
+    
+        # Create grad dict
+        grad_dict = {}
+        for idx, feature in enumerate(['area','curvature','sulcal_depth', 'thickness', 'WM-GM_ratio']):
+            grad_dict[feature] = avg_grad[:, idx]
 
+        # Reorder the grad dict
+        if order:
+            grad_dict = {k: grad_dict[k] for k in order}
+    else: 
+        pass
+
+    # Get paths, path titles, and rows for df
+    paths = []
+    path_titles = []
+    rows = []
+
+    # Postprocess each array
+    idx = 1
+    for key, lim in zip(grad_dict.keys(), abs_lims):
+        
+        # Process cortical plots
+        processed_grad, mask = p.remove_medial_wall(grad_dict[key][np.newaxis, :]) # remove the medial wall
+        processed_grad = p.clip_outliers(processed_grad) # clip outliers
+        processed_grad, _, _ = p.smooth_vertex_data(processed_grad, np.zeros(processed_grad.shape[1]), mask) # smooth the results
+
+        matlab_path = f'{p.output_dir}{p.suffix}_{key}_integrated_grad'
+        p.get_matlab(processed_grad.squeeze(), output_path=matlab_path) # create the matlab file
+        mat_files = [matlab_path]
+        matlab_file_list = "{" + ",".join([f"'{f}'" for f in mat_files]) + "}"
+
+        # If last column, show cbar
+        if idx % n_columns == 0:
+            # different function for this specific use case
+            cmd = ["matlab", "-nodisplay", "-nosplash", "-r", f"generate_brain({matlab_file_list}, {{'lat_L','lat_R','med_R','med_L'}}, {lim}); exit"]
+        else:
+            cmd = ["matlab", "-nodisplay", "-nosplash", "-r", f"generate_brain({matlab_file_list}, {{'lat_L','lat_R','med_R','med_L'}}, {lim}, false); exit"]
+        result = subprocess.run(cmd, cwd="/mnt/md0/tempFolder/samAnderson/nahian_code/", stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        # Add paths and title to list
+        paths.append(f'{p.output_dir}{p.suffix}_{key}_integrated_grad_latL_latR_medR_medL.png')
+        path_titles.append(key)
+        idx+=1
+        
+        # Add secondary angle to subplot
+        if key in both_angles:
+            if idx % n_columns == 0:
+                cmd = ["matlab", "-nodisplay", "-nosplash", "-r", f"generate_brain({matlab_file_list}, {{'ant','dor','pos','ven'}}, {lim}); exit"]
+            else:
+                cmd = ["matlab", "-nodisplay", "-nosplash", "-r", f"generate_brain({matlab_file_list}, {{'ant','dor','pos','ven'}}, {lim}, false); exit"]
+            result = subprocess.run(cmd, cwd="/mnt/md0/tempFolder/samAnderson/nahian_code/", stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            paths.append(f'{p.output_dir}{p.suffix}_{key}_integrated_grad_ant_dor_pos_ven.png')
+            path_titles.append('')
+            idx+=1
+        
+        # Get the average per feature and lobe
+        lobe_avg = postprocess().lobe_avgs(grad_dict[key][np.newaxis, :])
+        
+        # Round and format as X.XX%
+        lobe_avg_formatted = {lobe: v for lobe, v in lobe_avg.items()}
+        
+        # Add feature name
+        lobe_avg_formatted['feature'] = key
+        rows.append(lobe_avg_formatted)
+
+    # Show lobe averages
+    df = pd.DataFrame(rows)
+    cols = ['feature'] + [c for c in df.columns if c != 'feature']
+    df = df[cols]
+    print(df.to_string(index=False))
+
+    return paths, path_titles
 
 def ablate_model(X_test, y_test, model, suffix, mask=None, test_size=8):
 

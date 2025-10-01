@@ -196,9 +196,13 @@ class postprocess():
         return corrected_e, corrected_age_gap, all_corrected, factors
  
     # Clip array outliers based on percentile
-    def clip_outliers(self, arr, min_percentile=1, max_percentile=99):
-        lower_bound = np.percentile(arr, min_percentile)
-        upper_bound = np.percentile(arr, max_percentile)
+    def clip_outliers(self, arr, min_percentile=1, max_percentile=99, per_subject=False):
+        if per_subject:
+            lower_bound = np.percentile(arr, min_percentile, axis=(1, 2), keepdims=True)
+            upper_bound = np.percentile(arr, max_percentile, axis=(1, 2), keepdims=True)
+        else:
+            lower_bound = np.percentile(arr, min_percentile)
+            upper_bound = np.percentile(arr, max_percentile)
         return np.clip(arr, lower_bound, upper_bound)
  
     # Convert arrays to matlab format
@@ -357,7 +361,7 @@ class postprocess():
         for label_id in np.unique(self.labels):
         
             if label_id == 0: continue  # Skip medial wall
-            
+        
             # Select for the target region
             mask = self.labels == label_id
             region_name, hemi = self.names[label_id]
@@ -379,7 +383,7 @@ class postprocess():
         pval_map = {(region, hemi): pval for (region, hemi), pval in zip(valid_regions, adj_pval)}
         region_stats_df['adj_pval'] = region_stats_df.apply(
             lambda row: pval_map.get((row['region'], row['hemi']), np.nan), axis=1)
-        
+
         # Rank the regions by age gap
         sig_df = region_stats_df[region_stats_df['adj_pval'] < 0.05].copy()
         sig_df['age_gap_clean'] = sig_df['age_gap'].str.extract(r'([-+]?\d*\.\d+|\d+)')[0].astype(float)
@@ -389,7 +393,7 @@ class postprocess():
         # Print out the largest age gaps
         print('\nTop 10 significant age gaps:\n')
         print(sig_df.head(10).to_string(index=False))
-        
+
         # === Visualization === # 
 
         # Mask the corrected errors based on significance
@@ -398,7 +402,7 @@ class postprocess():
                 label_id = region_to_label[(region_name, hemi)]
                 mask = self.labels == label_id
                 full_c_errors[mask] = 0
-        
+
         # Clip the errors again for visualization purposes, then save the errors as matlab arrays
         self.get_matlab(self.clip_outliers(full_r_errors, 1, 99), output_path=f'{self.output_dir}{self.suffix}_raw_ME_data')
         self.get_matlab(self.clip_outliers(full_c_errors, 1, 99), output_path=f'{self.output_dir}{self.suffix}_corrected_ME_data')
@@ -419,7 +423,7 @@ class postprocess():
         #print(result)
         result = subprocess.run(command_alt, cwd="/mnt/md0/tempFolder/samAnderson/nahian_code/", stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         #print(result)
-        
+
         # Specify the image paths to load
         paths = [
             f'{self.output_dir}{self.suffix}_raw_ME_data_latL_latR_medR_medL.png', 

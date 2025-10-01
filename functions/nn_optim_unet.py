@@ -28,7 +28,7 @@ def run_model(X_train, y_train, X_test, y_test, model=None, mask=None,
               pooling_path='/mnt/md0/tempFolder/samAnderson/gnn_model/unet-gnn/pooling/',
               ico_levels=[6, 5, 4], criterion='mae', weight_decay=0.01, 
               first='rh', intra_w=0, global_w=0, feature_scale=1, dropout_levels=[0.5, 0.5],
-              ablation=False, integrated_grad=False, verbose=True):
+              ablation=False, integrated_grad=False, verbose=True, integrated_baseline=None):
     """
     High-level wrapper for training/testing a GNN model.
     """
@@ -80,7 +80,7 @@ def run_model(X_train, y_train, X_test, y_test, model=None, mask=None,
             n_epochs=n_epochs, lr=lr, print_every=print_every,
             ico_levels=ico_levels, criterion=criterion,
             weight_decay=weight_decay, first=first,
-            intra_w=intra_w, global_w=global_w,
+            intra_w=intra_w, global_w=global_w
         )
 
     # Train + test or test only or CV
@@ -93,7 +93,8 @@ def run_model(X_train, y_train, X_test, y_test, model=None, mask=None,
         ico_levels=ico_levels, criterion=criterion,
         weight_decay=weight_decay, first=first,
         intra_w=intra_w, global_w=global_w, 
-        ablation=ablation, integrated_grad=integrated_grad
+        ablation=ablation, integrated_grad=integrated_grad,
+        integrated_baseline=integrated_baseline
     )
 
     return results  # tuple: (avg_mae, per_node_e, chr_ages, age_gaps, pred_per_vertex)
@@ -680,7 +681,7 @@ class nn_builder(nn.Module):
 
         return avg_loss, avg_error, all_chr_ages, all_age_gaps, all_pred_per_vertex
 
-    def integrated_gradients(self, X_test, y_test, batch_load=1, n_steps=50):
+    def integrated_gradients(self, X_test, y_test, batch_load=1, set_baseline=None, n_steps=50): # =50 is default
 
         # Grab the model
         model = self.model.to(device)
@@ -692,48 +693,73 @@ class nn_builder(nn.Module):
 
         # Define function to account for captum wanting a tensor, but my model wanting a Data object
         def model_forward(x, batch):
-            batch = batch.clone()    # avoid modifying original batch
-            batch.x = x
-            return model(batch)      # your model.forward(batch)
+            new_batch = batch.clone()
+            new_batch.x = x
+            return model(new_batch)
 
-        # Save subject-level attributions
-        all_attributions = []
-        
-        # Iterate over batches
-        total_batches = len(loader_gnn)
-        for batch_idx, batch in enumerate(loader_gnn):
-            
-            # Send batch and baseline to CUDA
-            batch = batch.to(device)
-            baseline = torch.zeros_like(batch.x).to(device)
-            
-            # Expand the age to fill the input/output shape
-            batch.y = torch.repeat_interleave(batch.y, repeats=self.n_vertices) # number per batch, repeated per n_vertices
-            
-            # Initialize IG
+        # Define function for running IG
+        def run_IG(batch, baseline, batch_idx, total_batches):
+
+            # Expand y to match vertices
+            batch.y = torch.repeat_interleave(batch.y, repeats=self.n_vertices)
+
             ig = IntegratedGradients(model_forward)
 
-            # Run IG
             attributions = ig.attribute(
                 inputs=batch.x,
                 baselines=baseline,
                 additional_forward_args=(batch,),
                 n_steps=n_steps,
-                internal_batch_size=1
+                internal_batch_size=1 # because my batch expansion is custom, IG interacts with it poorly
             )
-            
-            all_attributions.append(attributions.squeeze(0).detach().cpu())  # (n_nodes, n_features)
+
+            all_attributions.append(attributions.squeeze(0).detach().cpu())
             print(f"Batch {batch_idx+1}/{total_batches} complete")
+
+        # Save subject-level attributions
+        all_attributions = []
+
+        if set_baseline is not None:
+
+            # Pick batch_load indices so we use the same subjects as baseline continuously
+            # see: "Hippocampal representations for deep learning on Alzheimer’s disease"
+            n_baseline = set_baseline.shape[0]
+            if n_baseline >= batch_load:
+                chosen_idx = np.random.choice(n_baseline, size=batch_load, replace=False)
+            else:
+                chosen_idx = np.arange(n_baseline)
+
+            # Build baseline dataset (one batch, reused across all test batches)
+            chosen_baselines = set_baseline[chosen_idx]
+            data_list = [Data_pyg(x=chosen_baselines[i]) for i in range(chosen_baselines.shape[0])]
+            loader_baseline = DataLoader_pyg(data_list, batch_size=batch_load, shuffle=False)
+
+            # Pull out the one batch of baselines
+            baseline_batch = next(iter(loader_baseline))
+            baseline_full = baseline_batch.x.to(device)
+
+            total_batches = len(loader_gnn)
+            for batch_idx, batch in enumerate(loader_gnn):
+                batch = batch.to(device) # send batch to cuda
+                # If last batch is smaller, truncate baseline accordingly
+                baseline = baseline_full[:batch.x.shape[0]].to(device)
+                run_IG(batch, baseline, batch_idx, total_batches)
+        else:
+            total_batches = len(loader_gnn)
+            for batch_idx, batch in enumerate(loader_gnn):
+                batch = batch.to(device)
+                baseline = torch.zeros_like(batch.x).to(device)
+                run_IG(batch, baseline, batch_idx, total_batches)
 
         # Concatenate across batches
         all_attributions = torch.cat(all_attributions, dim=0)  # (n_subjects*n_vertices, n_features)
-        
+
         # Reshape
         n_subjects = X_test.shape[0]
         n_vertices = all_attributions.shape[0] // n_subjects
         n_features = all_attributions.shape[1]
         all_attributions = all_attributions.view(n_subjects, n_vertices, n_features)
-        
+
         return all_attributions
 
     def vae_preproc(self, fsavg_path, batch_load, first='rh'):
@@ -828,9 +854,10 @@ class nn_builder(nn.Module):
         total_loss = ae_loss - (global_per_vertex * self.global_w) + (label_variances * self.intra_w)
         return total_loss.mean() if mean else total_loss
 
-    def load_data(self, x_path, y_path, mask=None):
+    def load_data(self, x_path, y_path=False, mask=None):
         X = np.load(x_path).astype(np.float32)
-        y = np.load(y_path).astype(np.float32)
+        if y_path: y = np.load(y_path).astype(np.float32)
+        else: return torch.from_numpy(X)
         
         if mask is not None:
             X = X[mask]
@@ -844,7 +871,8 @@ class nn_builder(nn.Module):
                  ico_levels=[6, 5, 4], criterion=F.l1_loss, 
                  weight_decay=0.01, first='rh',
                  intra_w=0.1, global_w=0.05,
-                 ablation=False, integrated_grad=False):
+                 ablation=False, integrated_grad=False,
+                 integrated_baseline=None):
         '''
         Manipulate the NN
         '''
@@ -922,7 +950,14 @@ class nn_builder(nn.Module):
         # If getting integrated gradients
         if integrated_grad:
             X_test, y_test = self.load_data(X_test, y_test, mask)
-            all_attributions = self.integrated_gradients(X_test, y_test, batch_load=batch_load)
+            if integrated_baseline is not None:
+                all_attributions = self.integrated_gradients(X_test, y_test, 
+                                                             batch_load=batch_load)
+            else:
+                integrated_baseline = self.load_data(integrated_baseline, mask=mask)
+                all_attributions = self.integrated_gradients(X_test, y_test, 
+                                                             batch_load=batch_load,
+                                                             set_baseline=integrated_baseline)
             return all_attributions.detach().cpu().numpy()
             
         # If using a trained model
