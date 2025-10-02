@@ -52,8 +52,8 @@ def integrated_grad(X_test, y_test, model, suffix,
         processed_grad, mask = p.remove_medial_wall(grad_dict[key][np.newaxis, :]) # remove the medial wall
         processed_grad = p.clip_outliers(processed_grad) # clip outliers
         processed_grad, _, _ = p.smooth_vertex_data(processed_grad, np.zeros(processed_grad.shape[1]), mask) # smooth the results
-
-        matlab_path = f'{p.output_dir}{p.suffix}_{key}_integrated_grad'
+        
+        matlab_path = f'{p.output_dir}{p.suffix}_{key}_integrated_grad'        
         p.get_matlab(processed_grad.squeeze(), output_path=matlab_path) # create the matlab file
         mat_files = [matlab_path]
         matlab_file_list = "{" + ",".join([f"'{f}'" for f in mat_files]) + "}"
@@ -65,7 +65,7 @@ def integrated_grad(X_test, y_test, model, suffix,
         else:
             cmd = ["matlab", "-nodisplay", "-nosplash", "-r", f"generate_brain({matlab_file_list}, {{'lat_L','lat_R','med_R','med_L'}}, {lim}, false); exit"]
         result = subprocess.run(cmd, cwd="/mnt/md0/tempFolder/samAnderson/nahian_code/", stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
+        
         # Add paths and title to list
         paths.append(f'{p.output_dir}{p.suffix}_{key}_integrated_grad_latL_latR_medR_medL.png')
         path_titles.append(key)
@@ -73,17 +73,19 @@ def integrated_grad(X_test, y_test, model, suffix,
         
         # Add secondary angle to subplot
         if key in both_angles:
+            
             if idx % n_columns == 0:
                 cmd = ["matlab", "-nodisplay", "-nosplash", "-r", f"generate_brain({matlab_file_list}, {{'ant','dor','pos','ven'}}, {lim}); exit"]
             else:
                 cmd = ["matlab", "-nodisplay", "-nosplash", "-r", f"generate_brain({matlab_file_list}, {{'ant','dor','pos','ven'}}, {lim}, false); exit"]
             result = subprocess.run(cmd, cwd="/mnt/md0/tempFolder/samAnderson/nahian_code/", stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            
             paths.append(f'{p.output_dir}{p.suffix}_{key}_integrated_grad_ant_dor_pos_ven.png')
             path_titles.append('')
             idx+=1
         
         # Get the average per feature and lobe
-        lobe_avg = postprocess().lobe_avgs(grad_dict[key][np.newaxis, :])
+        lobe_avg = p.lobe_avgs(grad_dict[key][np.newaxis, :])
         
         # Round and format as X.XX%
         lobe_avg_formatted = {lobe: v for lobe, v in lobe_avg.items()}

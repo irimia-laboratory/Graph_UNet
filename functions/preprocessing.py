@@ -207,7 +207,7 @@ def make_npy(dataset_dir,
 
     # Alphabetize the file suffixes, ignoring hemisphere for consistency
     file_suffixes = sorted(file_suffixes, key=lambda x: x[4:])
-
+    
     # Load in the demographic info / metadata
     if '.xlsx' in metadata_path:
         metadata_csv = pd.read_excel(metadata_path, dtype=str)
@@ -478,8 +478,8 @@ np.save(f'/mnt/md0/tempFolder/samAnderson/gnn_model/unet-gnn/datasets/processed/
 
 # Save memory
 del X_train, X_train_standardized, y_train, sex_train, subjects_train
-"""
 
+"""
 # ======================================================================================================= #
 """
 # Load in the dataset information

@@ -903,7 +903,7 @@ class nn_builder(nn.Module):
             # Create objects to hold data of interest
             mae_results = {}
             per_subj_results = {}
-            features_names = ['area', 'curv', 'sulc', 'thickness', 'WM-GM_ratio'] # from functions/preprocessing . sort makes this easier
+            feature_names = ['area', 'curv', 'sulc', 'thickness', 'WM-GM_ratio'] # from functions/preprocessing . sort makes this easier
             epsilon = 1e-8
             
             # Load the testing data and get the number of features 
@@ -934,10 +934,10 @@ class nn_builder(nn.Module):
                 
                 # Percent change in MAE relative to baseline
                 ablate_mae = torch.mean(torch.abs(pred_per_vertex - y_test_vals[:, None]), dim=0).cpu().numpy()
-                mae_results[features_names[f_idx]] = 100 * (ablate_mae - mae_baseline) / (mae_baseline + epsilon)
+                mae_results[feature_names[f_idx]] = 100 * (ablate_mae - mae_baseline) / (mae_baseline + epsilon)
 
                 # Raw subject predictions
-                per_subj_results[features_names[f_idx]] = [avg_mae.cpu().numpy(), 
+                per_subj_results[feature_names[f_idx]] = [avg_mae.cpu().numpy(), 
                                                            per_node_e.cpu().numpy(), 
                                                            y_test_vals.cpu().numpy(), 
                                                            age_gaps.cpu().numpy(),

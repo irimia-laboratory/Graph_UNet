@@ -232,7 +232,8 @@ class postprocess():
     
     # Get statistics for all regions
     def get_region_stats(self, per_node_e, per_node_e_corrected=None, pred_per_vertex=None, use_abs=True, 
-                            remove_medial=True, medial_labels={'Medial_wall', 'Unknown', '???'}):
+                            remove_medial=True, use_max=False,
+                            medial_labels={'Medial_wall', 'Unknown', '???'}):
 
         # Ensure labels and names are loaded
         if not hasattr(self, 'labels') or not hasattr(self, 'names'):
@@ -241,7 +242,7 @@ class postprocess():
         unique_labels = np.unique(self.labels)
         rows = []
 
-        if pred_per_vertex is None:
+        if pred_per_vertex is None: # assumes per_node_e is a 1d array
             for lid in unique_labels:
 
                 # Mask for the target region
@@ -251,19 +252,24 @@ class postprocess():
                 # Skip medial wall
                 if remove_medial and region_name in medial_labels: continue
                 
-                # Get the average error, variance, and skew of the region predictions
-                error = per_node_e[region_mask].mean()
-                
+                # Get the average error, variance, and skew of the errors
+                if use_max:
+                    error = np.abs(per_node_e[region_mask]).max()
+                else:
+                    error = per_node_e[region_mask].mean()
+                var = np.var(per_node_e[region_mask], ddof=1)
+                skew_val = skew(per_node_e[region_mask])
+                                                    
                 rows.append({
                     "region": region_name,
                     "hemi": hemi,
-                    "age_gap": f'{error:.2f}',
-                    "variance": "-",
-                    "skew": "-",
-                    "sort_val" : f'{error:.2f}'
+                    "age_gap": round(error, 2),
+                    "variance": round(var, 2),
+                    "skew": round(skew_val, 2),
+                    "sort_val" : error
                 })
 
-        else:
+        else: # assumes per_node_e is a 2d array (subj, vertices)
             for lid in unique_labels:
 
                 # Mask for the target region
@@ -283,8 +289,8 @@ class postprocess():
                     "region": region_name,
                     "hemi": hemi,
                     "age_gap": f'{corrected_error:.2f} ({error:.2f})',
-                    "variance": f'{var:.2f}',
-                    "skew": f'{skew_val:.2f}',
+                    "variance": round(var, 2),
+                    "skew": round(skew_val, 2),
                     "sort_val" : corrected_error
                 })
 
