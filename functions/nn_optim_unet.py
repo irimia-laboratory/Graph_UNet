@@ -163,7 +163,7 @@ def get_gnn(fs=1, dropout_levels = [0.5, 0.5],
 
         # Save the relevant list of tensors to the ico dict entry
         upsampling_toolkit[ico] = [first_coor.squeeze(), second_coor.squeeze()]
-
+        
     # Define the gnn model
     class gnn_model(torch.nn.Module):
         def __init__(self):
