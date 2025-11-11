@@ -1,41 +1,59 @@
-# Standard library imports
+# === Standard library imports === #
 import os
-import warnings
+import glob
+import gc
+import re
 import subprocess
+import warnings
+import time
+import random
+from collections import defaultdict
+from copy import deepcopy
+import string
 
-# Third-party imports
+# === Third-party scientific computing === #
 import numpy as np
 import pandas as pd
+import nibabel as nib
 import pickle
-from collections import defaultdict
-import torch
+import scipy.io
+import scipy.sparse as sparse
 from scipy.io import loadmat
+from scipy.stats import (
+    ttest_ind, spearmanr, rankdata, norm, skew
+)
+from scipy.spatial.distance import squareform, pdist
 
-# Plotting imports
+# === Statistical analysis & ML === #
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from statsmodels.stats.multitest import multipletests
+from sklearn.decomposition import PCA
+from sklearn.cross_decomposition import CCA
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.metrics import r2_score
+from sklearn.model_selection import KFold, train_test_split
+import itertools
+
+# === PyTorch & PyG === #
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_scatter import scatter_mean
+from captum.attr import IntegratedGradients
+from torch_geometric.data import Batch, Data as Data_pyg
+from torch_geometric.loader import DataLoader as DataLoader_pyg
+from torch_geometric.nn import GCNConv, BatchNorm
+
+# === Plotting === #
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Rectangle
 import seaborn as sns
 
-# Statistical analysis
-import statsmodels as sm
-from statsmodels.stats.multitest import multipletests
-from scipy.stats import ttest_ind, spearmanr, rankdata, norm
-from scipy.spatial.distance import squareform, pdist
-from sklearn.decomposition import PCA
-from sklearn.cross_decomposition import CCA
-from sklearn.linear_model import LinearRegression
-
-# Suppress warnings
-warnings.filterwarnings('ignore')  # Explanation: pytorch warning when converting numpy array slice to tensor
-
-# Local function imports
-from nn_optim_unet import *
-from postprocessing import *
-
-# Local variables
-from dataset_config import datasets
+# === Suppress warnings === #
+warnings.filterwarnings('ignore')  # Explanation: suppress PyTorch slicing warning
 
 # ico lvl
 ico_levels=[6, 5, 4]
@@ -79,10 +97,10 @@ n_train_epochs = 50
 lr = 0.01 
 weight_decay = 0
 
-intra_w = 0.5
-global_w = 1
+intra_w = 0.5 # deprecated, ended up using MAE
+global_w = 1 # deprecated, ended up using MAE
 feature_scale = 1
-dropout_levels = [0, 0, 0.5, 0.5, 0]
+dropout_levels = [0, 0, 0, 0, 0]
 
 print_every = 25
 

@@ -334,13 +334,14 @@ def get_gnn(fs=1, dropout_levels = [0.5, 0.5],
             gnn_x_6 = self.gcn1(x, self.edge_indices[self.ico_levels[0]]) # 5 -> 16
             gnn_x_6 = self.bn1(gnn_x_6)
             gnn_x_6 = self.relu1(gnn_x_6)
+            gnn_x_6 = self.dropout1(gnn_x_6)
 
             ### Second block ###
             gnn_x_5 = self.downsample_block(gnn_x_6, ico=self.ico_levels[0]) # ico 6 -> ico 5
             gnn_x_5 = self.gcn2(gnn_x_5, self.edge_indices[self.ico_levels[1]])  # 16 -> 32
             gnn_x_5 = self.bn2(gnn_x_5)
             gnn_x_5 = self.relu2(gnn_x_5)
-            gnn_x_5 = self.dropout1(gnn_x_5)
+            gnn_x_5 = self.dropout2(gnn_x_5)
 
             # Embedding phase 
 
@@ -349,7 +350,7 @@ def get_gnn(fs=1, dropout_levels = [0.5, 0.5],
             gnn_x_4 = self.gcn3(gnn_x_4, self.edge_indices[self.ico_levels[2]]) # 32 -> 32
             gnn_x_4 = self.bn3(gnn_x_4)
             gnn_x_4 = self.relu3(gnn_x_4)
-            gnn_x_4 = self.dropout2(gnn_x_4)
+            gnn_x_4 = self.dropout3(gnn_x_4)
 
             # Decoding phase 
             
@@ -360,6 +361,7 @@ def get_gnn(fs=1, dropout_levels = [0.5, 0.5],
             gnn_x1_5 = self.gcn4(gnn_x1_5, self.edge_indices[ico_levels[1]])  # 48 -> 16
             gnn_x1_5 = self.bn4(gnn_x1_5)
             gnn_x1_5 = self.relu4(gnn_x1_5)
+            gnn_x1_5 = self.dropout4(gnn_x1_5)
 
             ### Fifth block ###
             gnn_x1_6 = self.upsample_block(gnn_x1_5, ico=ico_levels[1]) # ico 5 -> ico 6
@@ -368,6 +370,7 @@ def get_gnn(fs=1, dropout_levels = [0.5, 0.5],
             gnn_x1_6 = self.gcn5(gnn_x1_6, self.edge_indices[ico_levels[0]]) # 32 -> 16
             gnn_x1_6 = self.bn5(gnn_x1_6)
             gnn_x1_6 = self.relu5(gnn_x1_6)
+            gnn_x1_6 = self.dropout5(gnn_x1_6)
 
             ### Sixth block ###
             gnn_x1_6 = self.gcn6(gnn_x1_6, self.edge_indices[ico_levels[0]]) # 16 -> 1
@@ -386,7 +389,7 @@ class nn_builder(nn.Module):
         self.model = model # untrained model object
     
     def train_nn(self, X_train, y_train, batch_size, 
-                batch_load, n_epochs, lr, print_every, criterion, weight_decay=0.01):
+                batch_load, n_epochs, lr, print_every, criterion, weight_decay=0):
         '''
         train the neural network
             assumes identical graph for all subjects
@@ -486,7 +489,7 @@ class nn_builder(nn.Module):
         return model
 
     @torch.no_grad()
-    def test_nn(self, X_test, y_test, batch_load):
+    def test_nn(self, X_test, y_test, batch_load, vae=False):
         '''
         Test the neural network
         '''
@@ -507,7 +510,7 @@ class nn_builder(nn.Module):
         # Initialize accumulators
         brain_ages = torch.zeros(y_test.shape[0], device=device)  # global (avg) predictions
         sum_mae = torch.tensor(0.0, device=device)  # sum of MAE for all batches
-        sum_vae = torch.tensor(0.0, device=device)  # sum of VAE for all batches
+        if vae: sum_vae = torch.tensor(0.0, device=device)  # sum of VAE for all batches
         sum_per_node_error = torch.zeros(self.n_vertices, device=device)  # raw error per vertex
         pred_per_vertex = torch.zeros((y_test.shape[0], self.n_vertices), device=device) # all predictions per vertex
         total_samples = 0  # counter for total processed samples
@@ -558,18 +561,18 @@ class nn_builder(nn.Module):
             
             # Calculate and accumulate losses weighted by batch size
             sum_mae += error.abs().mean() * batch.num_graphs
-            sum_vae += self.variance_and_mae(output, batch.y) * batch.num_graphs
+            if vae: sum_vae += self.variance_and_mae(output, batch.y) * batch.num_graphs
             total_samples += batch.num_graphs
 
         # Compute averages using actual processed sample count
         # note that this may be slightly inaccurate since its an avg of averages, 
         # and there may be a single batch that's smaller. But this is negligible
         avg_mae = sum_mae / total_samples
-        avg_vae = sum_vae / total_samples
+        if vae: avg_vae = sum_vae / total_samples
         per_node_e = sum_per_node_error / total_samples
 
         print(f'MAE (L1) Loss: {avg_mae.item():.3f} across {total_samples} observations')
-        print(f'Variance and MAE Loss: {avg_vae.item():.3f} across {total_samples} observations')
+        if vae: print(f'Variance and MAE Loss: {avg_vae.item():.3f} across {total_samples} observations')
 
         # Get the whole-brain error
         age_gaps = brain_ages - y_test #(brain_ages - y_test)
@@ -865,14 +868,14 @@ class nn_builder(nn.Module):
         
         return torch.from_numpy(X), torch.from_numpy(y)
 
-    def __call__(self, X_train, y_train, X_test, y_test,
+    def __call__(self, X_train=None, y_train=None, X_test=None, y_test=None,
                  model=None, mask=None, batch_size=32, batch_load=1, 
                  n_epochs=50, lr=0.0001, print_every=10, 
                  ico_levels=[6, 5, 4], criterion=F.l1_loss, 
                  weight_decay=0.01, first='rh',
                  intra_w=0.1, global_w=0.05,
                  ablation=False, integrated_grad=False,
-                 integrated_baseline=None):
+                 integrated_baseline=None, as_init=False):
         '''
         Manipulate the NN
         '''
@@ -896,6 +899,8 @@ class nn_builder(nn.Module):
 
         # Set seed for reproducability
         set_seed(SEED)
+        
+        if as_init: return
         
         # If running ablation for the test set
         if ablation:
