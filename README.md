@@ -1,2 +1,2 @@
-Code used in "Graph Neural Network Reveals the Local Cortical Morphology of Brain Aging in Normal Cognition and Alzheimer’s Disease"
+Code used in "Graph neural network reveals the local cortical morphology of brain aging in normal cognition and Alzheimer’s Disease"
 
