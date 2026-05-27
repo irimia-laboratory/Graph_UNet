@@ -1,0 +1,7 @@
+name: /mnt/md0/tempFolder/samAnderson/unet-gnn/env_gnn
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+prefix: /mnt/md0/tempFolder/samAnderson/unet-gnn/env_gnn
