@@ -60,6 +60,20 @@ For example:
 
 ---
 
+### [`./supplementary_tables`](./supplementary_tables)
+
+Contains the complete supplementary tables associated with the manuscript.
+
+These files correspond to the full supplementary materials referenced throughout the paper.
+
+---
+
+### [`./trained_weights.pth`](./trained_weights.pth)
+
+Contains the trained model weights used in the manuscript experiments.
+
+These weights are intended to be loaded using the provided configuration setup defined in [`./config.py`](./config.py) and the associated training/inference scripts.
+
 ## Environment Recreation
 
 The following files provide partial support for recreating the original environment:
